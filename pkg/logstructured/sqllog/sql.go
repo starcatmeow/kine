@@ -204,7 +204,7 @@ func (s *SQLLog) compact(compactRev int64, targetCompactRev int64) (int64, int64
 	ctx, cancel := context.WithTimeout(s.ctx, compactTimeout)
 	defer cancel()
 
-	t, err := s.d.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	t, err := s.d.BeginTx(ctx, &sql.TxOptions{Isolation: s.d.GetIsolationLevel()})
 	if err != nil {
 		return 0, 0, errors.Wrap(err, "failed to begin transaction")
 	}

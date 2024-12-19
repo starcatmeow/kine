@@ -73,30 +73,39 @@ type ConnectionPoolConfig struct {
 type Generic struct {
 	sync.Mutex
 
-	LockWrites            bool
-	LastInsertID          bool
-	DB                    *sql.DB
-	GetCurrentSQL         string
-	GetRevisionSQL        string
-	RevisionSQL           string
-	ListRevisionStartSQL  string
-	GetRevisionAfterSQL   string
-	CountCurrentSQL       string
-	CountRevisionSQL      string
-	AfterSQL              string
-	DeleteSQL             string
-	CompactSQL            string
-	UpdateCompactSQL      string
-	PostCompactSQL        string
-	InsertSQL             string
-	FillSQL               string
-	InsertLastInsertIDSQL string
-	GetSizeSQL            string
-	Retry                 ErrRetry
-	InsertRetry           ErrRetry
-	TranslateErr          TranslateErr
-	ErrCode               ErrCode
-	FillRetryDuration     time.Duration
+	LockWrites             bool
+	LastInsertID           bool
+	InsertReturningInto    bool
+	DB                     *sql.DB
+	GetCurrentSQL          string
+	GetRevisionSQL         string
+	RevisionSQL            string
+	CompactRevisionSQL     string
+	ListRevisionStartSQL   string
+	GetRevisionAfterSQL    string
+	CountCurrentSQL        string
+	CountRevisionSQL       string
+	AfterSQL               string
+	DeleteSQL              string
+	CompactSQL             string
+	UpdateCompactSQL       string
+	PostCompactSQL         string
+	InsertSQL              string
+	FillSQL                string
+	InsertLastInsertIDSQL  string
+	InsertReturningIntoSQL string
+	GetSizeSQL             string
+	LimitSQL               string
+	IsolationLevel         sql.IsolationLevel
+	Retry                  ErrRetry
+	InsertRetry            ErrRetry
+	TranslateErr           TranslateErr
+	ErrCode                ErrCode
+	FillRetryDuration      time.Duration
+}
+
+func (d *Generic) GetIsolationLevel() sql.IsolationLevel {
+	return d.IsolationLevel
 }
 
 func q(sql, param string, numbered bool) string {
@@ -209,7 +218,8 @@ func Open(ctx context.Context, driverName, dataSourceName string, connPoolConfig
 		GetCurrentSQL:        q(fmt.Sprintf(listSQL, "AND mkv.name > ?"), paramCharacter, numbered),
 		ListRevisionStartSQL: q(fmt.Sprintf(listSQL, "AND mkv.id <= ?"), paramCharacter, numbered),
 		GetRevisionAfterSQL:  q(fmt.Sprintf(listSQL, "AND mkv.name > ? AND mkv.id <= ?"), paramCharacter, numbered),
-
+		RevisionSQL:          revSQL,
+		CompactRevisionSQL:   compactRevSQL,
 		CountCurrentSQL: q(fmt.Sprintf(`
 			SELECT (%s), COUNT(c.theid)
 			FROM (
@@ -242,11 +252,17 @@ func Open(ctx context.Context, driverName, dataSourceName string, connPoolConfig
 		InsertLastInsertIDSQL: q(`INSERT INTO kine(name, created, deleted, create_revision, prev_revision, lease, value, old_value)
 			values(?, ?, ?, ?, ?, ?, ?, ?)`, paramCharacter, numbered),
 
+		InsertReturningIntoSQL: q(`INSERT INTO kine(name, created, deleted, create_revision, prev_revision, lease, value, old_value)
+			values(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id INTO ?`, paramCharacter, numbered),
+
 		InsertSQL: q(`INSERT INTO kine(name, created, deleted, create_revision, prev_revision, lease, value, old_value)
 			values(?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`, paramCharacter, numbered),
 
 		FillSQL: q(`INSERT INTO kine(id, name, created, deleted, create_revision, prev_revision, lease, value, old_value)
 			values(?, ?, ?, ?, ?, ?, ?, ?, ?)`, paramCharacter, numbered),
+
+		LimitSQL:       "%s LIMIT %d",
+		IsolationLevel: sql.LevelSerializable,
 	}, err
 }
 
@@ -291,7 +307,7 @@ func (d *Generic) execute(ctx context.Context, sql string, args ...interface{}) 
 
 func (d *Generic) GetCompactRevision(ctx context.Context) (int64, error) {
 	var id int64
-	row := d.queryRow(ctx, compactRevSQL)
+	row := d.queryRow(ctx, d.CompactRevisionSQL)
 	err := row.Scan(&id)
 	if err == sql.ErrNoRows {
 		return 0, nil
@@ -336,7 +352,7 @@ func (d *Generic) DeleteRevision(ctx context.Context, revision int64) error {
 func (d *Generic) ListCurrent(ctx context.Context, prefix, startKey string, limit int64, includeDeleted bool) (*sql.Rows, error) {
 	sql := d.GetCurrentSQL
 	if limit > 0 {
-		sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
+		sql = fmt.Sprintf(d.LimitSQL, sql, limit)
 	}
 	return d.query(ctx, sql, prefix, startKey, includeDeleted)
 }
@@ -345,14 +361,14 @@ func (d *Generic) List(ctx context.Context, prefix, startKey string, limit, revi
 	if startKey == "" {
 		sql := d.ListRevisionStartSQL
 		if limit > 0 {
-			sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
+			sql = fmt.Sprintf(d.LimitSQL, sql, limit)
 		}
 		return d.query(ctx, sql, prefix, revision, includeDeleted)
 	}
 
 	sql := d.GetRevisionAfterSQL
 	if limit > 0 {
-		sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
+		sql = fmt.Sprintf(d.LimitSQL, sql, limit)
 	}
 	return d.query(ctx, sql, prefix, startKey, revision, includeDeleted)
 }
@@ -381,7 +397,7 @@ func (d *Generic) Count(ctx context.Context, prefix, startKey string, revision i
 
 func (d *Generic) CurrentRevision(ctx context.Context) (int64, error) {
 	var id int64
-	row := d.queryRow(ctx, revSQL)
+	row := d.queryRow(ctx, d.RevisionSQL)
 	err := row.Scan(&id)
 	if err == sql.ErrNoRows {
 		return 0, nil
@@ -392,7 +408,7 @@ func (d *Generic) CurrentRevision(ctx context.Context) (int64, error) {
 func (d *Generic) After(ctx context.Context, prefix string, rev, limit int64) (*sql.Rows, error) {
 	sql := d.AfterSQL
 	if limit > 0 {
-		sql = fmt.Sprintf("%s LIMIT %d", sql, limit)
+		sql = fmt.Sprintf(d.LimitSQL, sql, limit)
 	}
 	return d.query(ctx, sql, prefix, rev)
 }
@@ -431,6 +447,14 @@ func (d *Generic) Insert(ctx context.Context, key string, create, delete bool, c
 			return 0, err
 		}
 		return row.LastInsertId()
+	}
+
+	if d.InsertReturningInto {
+		_, err := d.execute(ctx, d.InsertReturningIntoSQL, key, cVal, dVal, createRevision, previousRevision, ttl, value, prevValue, sql.Out{Dest: &id})
+		if err != nil {
+			return 0, err
+		}
+		return id, nil
 	}
 
 	// Drivers without LastInsertID support may conflict on the serial id key when inserting rows,
