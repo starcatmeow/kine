@@ -15,7 +15,7 @@ import (
 
 var errNoCgo = errors.New("this binary is built without CGO, sqlite is disabled")
 
-func New(ctx context.Context, cfg drivers.Config) (bool, server.Backend, error) {
+func New(ctx context.Context, cfg *drivers.Config) (bool, server.Backend, error) {
 	return false, nil, errNoCgo
 }
 
@@ -28,6 +28,6 @@ func setup(db *sql.DB) error {
 }
 
 func init() {
-	generic.RegisterDriver("sqlite", New)
-	generic.SetDefaultDriver("sqlite")
+	drivers.Register("sqlite", New)
+	drivers.SetDefault("sqlite")
 }
