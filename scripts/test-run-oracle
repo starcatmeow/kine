@@ -1,0 +1,27 @@
+#!/bin/bash
+
+start-test() {
+    local ip=$(cat $TEST_DIR/databases/*/metadata/ip)
+    local port=$(cat $TEST_DIR/databases/*/metadata/port)
+    local pass=$(cat $TEST_DIR/databases/*/metadata/password)
+    local image=$(cat $TEST_DIR/databases/*/metadata/image)
+    DB_CONNECTION_TEST="
+        docker run --rm
+        --name connection-test
+        truemark/sqlplus:19.8
+        sqlplus -L -S SYSTEM/$pass@//$ip:$port/XEPDB1" \
+    timeout --foreground 5m bash -c "wait-for-db-connection"
+    KINE_IMAGE=$IMAGE KINE_ENDPOINT="oracle://SYSTEM:$pass@$ip:$port/XEPDB1" provision-kine
+    local kine_url=$(cat $TEST_DIR/kine/*/metadata/url)
+    K3S_DATASTORE_ENDPOINT=$kine_url provision-cluster
+}
+export -f start-test
+
+VERSION_LIST="\
+    gvenzl/oracle-xe 21.3.0
+    gvenzl/oracle-xe 18.4.0"
+
+while read ENGINE VERSION; do
+    LABEL=$ENGINE-$VERSION DB_PASSWORD_ENV=ORACLE_PASSWORD DB_IMAGE=docker.io/$ENGINE:$VERSION run-test
+done <<< $VERSION_LIST
+
